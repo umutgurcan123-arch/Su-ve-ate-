@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Ateş ve Su</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: #020617; color: #fff; font-family: system-ui, sans-serif;
+    overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
+  .screen { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center;
+    gap: 12px; padding: 16px; background: #0f172a; text-align: center; }
+  .screen.on { display: flex; }
+  h1 { margin: 0; font-size: 28px; }
+  .small { color: #cbd5e1; font-size: 14px; }
+  input { font-size: 20px; padding: 10px; border-radius: 10px; border: 0; background: #1e293b; color: #fff;
+    width: 120px; text-align: center; text-transform: uppercase; }
+  button { font-size: 18px; font-weight: 700; color: #fff; border: 0; border-radius: 12px; padding: 12px 22px; }
+  .row { display: flex; gap: 12px; align-items: center; justify-content: center; flex-wrap: wrap; }
+  .green { background: #22c55e; } .indigo { background: #6366f1; }
+  .pick { width: 140px; height: 100px; font-size: 22px; border-radius: 16px; }
+  .pick:disabled { opacity: .3; }
+  .pick.mine { outline: 4px solid #fff; }
+  #game { position: fixed; inset: 0; display: none; }
+  #game.on { display: block; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .ctrl { position: absolute; bottom: calc(16px + env(safe-area-inset-bottom)); width: 72px; height: 72px; border-radius: 50%;
+    background: #ffffff2e; font-size: 30px; display: flex; align-items: center; justify-content: center; padding: 0; }
+  .ctrl.down { background: #ffffff66; }
+  #overlay { position: absolute; inset: 0; background: #000a; display: none; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px; }
+  #overlay.on { display: flex; }
+</style>
+</head>
+<body>
+
+<div id="home" class="screen on">
+  <h1>🔥 Ateş ve Su 💧</h1>
+  <button class="green" id="create">Oda Kur</button>
+  <div class="small">veya arkadaşının verdiği kodla katıl</div>
+  <div class="row">
+    <input id="code" maxlength="4" placeholder="KOD" autocapitalize="characters" autocomplete="off">
+    <button class="indigo" id="join">Katıl</button>
+  </div>
+  <div class="small" id="homeMsg"></div>
+</div>
+
+<div id="lobby" class="screen">
+  <h1>Oda kodu: <span id="lobbyCode"></span></h1>
+  <div class="small" id="lobbyInfo"></div>
+  <div class="row">
+    <button class="pick" id="pickFire" style="background:#ef4444">🔥 Ateş</button>
+    <button class="pick" id="pickWater" style="background:#3b82f6">💧 Su</button>
+  </div>
+  <button id="leave" style="background:#334155;font-size:14px">Odadan çık</button>
+</div>
+
+<div id="game">
+  <canvas id="cv"></canvas>
+  <button class="ctrl" id="bLeft" style="left:16px">◀</button>
+  <button class="ctrl" id="bRight" style="left:104px">▶</button>
+  <button class="ctrl" id="bJump" style="right:20px;width:88px;height:88px">⤒</button>
+  <div id="overlay">
+    <h1 id="ovText"></h1>
+    <button class="green" id="next" style="display:none">Devam</button>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const PW = 0.7, PH = 0.9;
+const COLORS = { '#': '#475569', L: '#f97316', W: '#3b82f6', G: '#84cc16', f: '#fdba74', w: '#93c5fd' };
+
+let ws = null, grid = null, st = null, you = null;
+const disp = { f: null, w: null };
+const keys = { left: false, right: false, jump: false };
+
+function show(id) {
+  ['home', 'lobby'].forEach((s) => $(s).classList.toggle('on', s === id));
+  $('game').classList.toggle('on', id === 'game');
+}
+const send = (o) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
+
+function connect(first) {
+  if (ws) { ws.onclose = null; ws.close(); }
+  $('homeMsg').textContent = 'Bağlanılıyor…';
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
+  const sock = ws;
+  sock.onopen = () => { $('homeMsg').textContent = ''; send(first); };
+  sock.onerror = () => { $('homeMsg').textContent = 'Sunucuya bağlanılamadı.'; };
+  sock.onclose = () => { if (ws === sock) { show('home'); grid = null; st = null; } };
+  sock.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.t === 'lobby') {
+      grid = null; st = null; you = m.you;
+      $('lobbyCode').textContent = m.code;
+      $('lobbyInfo').textContent = m.count < 2 ? 'Arkadaşın katılsın diye kodu paylaş…' : 'İkiniz de seçince oyun başlar';
+      for (const [role, id] of [['fire', 'pickFire'], ['water', 'pickWater']]) {
+        const mine = m.you === role;
+        $(id).disabled = m.taken[role] && !mine;
+        $(id).classList.toggle('mine', mine);
+      }
+      show('lobby');
+    } else if (m.t === 'start') {
+      grid = m.grid; you = m.you; disp.f = disp.w = null; show('game');
+    } else if (m.t === 's') {
+      st = m;
+    } else if (m.t === 'err') {
+      alert(m.msg);
+    }
+  };
+}
+
+$('create').onclick = () => connect({ t: 'create' });
+$('join').onclick = () => connect({ t: 'join', code: $('code').value });
+$('pickFire').onclick = () => send({ t: 'pick', role: 'fire' });
+$('pickWater').onclick = () => send({ t: 'pick', role: 'water' });
+$('leave').onclick = () => { send({ t: 'leave' }); show('home'); };
+$('next').onclick = () => send({ t: 'next' });
+
+function setKey(k, v) {
+  if (keys[k] === v) return;
+  keys[k] = v;
+  send({ t: 'input', ...keys });
+}
+function bind(id, k) {
+  const b = $(id);
+  const on = (e) => { e.preventDefault(); b.classList.add('down'); setKey(k, true); };
+  const off = (e) => { e.preventDefault(); b.classList.remove('down'); setKey(k, false); };
+  b.addEventListener('touchstart', on, { passive: false });
+  b.addEventListener('touchend', off, { passive: false });
+  b.addEventListener('touchcancel', off, { passive: false });
+  b.addEventListener('mousedown', on);
+  b.addEventListener('mouseup', off);
+  b.addEventListener('mouseleave', off);
+}
+bind('bLeft', 'left'); bind('bRight', 'right'); bind('bJump', 'jump');
+const kmap = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'jump', ' ': 'jump', a: 'left', d: 'right', w: 'jump' };
+addEventListener('keydown', (e) => { if (kmap[e.key]) setKey(kmap[e.key], true); });
+addEventListener('keyup', (e) => { if (kmap[e.key]) setKey(kmap[e.key], false); });
+
+const cv = $('cv'), ctx = cv.getContext('2d');
+function draw() {
+  requestAnimationFrame(draw);
+  if (!grid) return;
+  const dpr = devicePixelRatio || 1;
+  if (cv.width !== innerWidth * dpr || cv.height !== innerHeight * dpr) { cv.width = innerWidth * dpr; cv.height = innerHeight * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#020617'; ctx.fillRect(0, 0, innerWidth, innerHeight);
+  const rows = grid.length, cols = grid[0].length;
+  const ts = Math.min(innerWidth / cols, innerHeight / rows);
+  const ox = (innerWidth - cols * ts) / 2, oy = (innerHeight - rows * ts) / 2;
+  ctx.fillStyle = '#0f172a'; ctx.fillRect(ox, oy, cols * ts, rows * ts);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const col = COLORS[grid[r][c]];
+    if (col) { ctx.fillStyle = col; ctx.fillRect(ox + c * ts, oy + r * ts, ts + 0.5, ts + 0.5); }
+  }
+  if (st) {
+    for (const [k, color, label] of [['f', '#ef4444', '🔥'], ['w', '#38bdf8', '💧']]) {
+      const t = st[k];
+      if (!disp[k] || Math.abs(disp[k][0] - t[0]) > 2 || Math.abs(disp[k][1] - t[1]) > 2) disp[k] = [t[0], t[1]];
+      disp[k][0] += (t[0] - disp[k][0]) * 0.6; disp[k][1] += (t[1] - disp[k][1]) * 0.6;
+      const x = ox + disp[k][0] * ts, y = oy + disp[k][1] * ts;
+      ctx.fillStyle = color; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.roundRect(x, y, PW * ts, PH * ts, ts / 4); ctx.fill(); ctx.stroke();
+      ctx.font = `${ts * 0.55}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(label, x + PW * ts / 2, y + PH * ts / 2);
+    }
+    const ov = $('overlay');
+    ov.classList.toggle('on', st.st !== 'play');
+    if (st.st === 'dead') { $('ovText').textContent = (st.who === 'fire' ? '🔥 Ateş' : '💧 Su') + ' öldü! Yeniden başlıyor…'; $('next').style.display = 'none'; }
+    if (st.st === 'won') { $('ovText').textContent = '🎉 Tebrikler!'; $('next').style.display = ''; }
+  }
+}
+draw();
+</script>
+</body>
+</html>
